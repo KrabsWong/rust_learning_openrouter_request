@@ -1,12 +1,15 @@
 use dotenvy::dotenv;
 use futures_util::StreamExt;
 use reqwest::Client;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::time::Duration;
 use serde::Deserialize;
 use serde::Serialize;
 use std::{
     env,
-    io::{Write, stdout},
+    io::{Write, self},
 };
+use colored::Colorize; // Added for terminal styling
 
 // 定义消息结构体
 #[derive(Serialize)]
@@ -51,10 +54,16 @@ struct Delta {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
-    println!("Start--");
+    let waiting_for_user_content = create_spinner("I am ready to translate. Please provide the content you need translated.");
+    waiting_for_user_content.finish();
+    io::stdout().flush()?;
+
+    let mut translate_string = String::new();
+    let _ = io::stdin().read_line(&mut translate_string);
 
     let api_key = env::var("OPENROUTER_API_KEY")
         .map_err(|_| "Error: Missing env field OPENROUTER_API_KEY")?;
+    let system_prompty = String::from("Translate user typied content below enclosed in <user_content></user_content> into Simple Chinese, return text only.");
 
     let model =
         env::var("OPENROUTER_MODEL").map_err(|_| "Error: Missing env field OPENROUTER_MODEL")?;
@@ -63,12 +72,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         messages: vec![
             Message {
                 role: "system".to_string(),
-                content: "your are a helpful assitant".to_string(),
+                content: system_prompty.to_string()
             },
             Message {
                 role: "user".to_string(),
-                content: "Tell me something about Rust".to_string(),
-            },
+                content: ("<user_content>".to_string() + &translate_string.trim() + "</user_content>").to_string()
+            }
         ],
         stream: true,
     };
@@ -86,7 +95,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .error_for_status()?
         .bytes_stream();
 
-    println!("Get the stream response");
     while let Some(item) = stream.next().await {
         let chunk = item?;
         let text_chunk = std::str::from_utf8(&chunk)?;
@@ -96,7 +104,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let json_str = line[5..].trim();
 
                 if json_str == "[DONE]" {
-                    println!("\nStream finished");
                     break;
                 }
 
@@ -104,16 +111,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match serde_json::from_str::<ApiResponse>(json_str) {
                         Ok(current_item) => {
                             if let Some(choice_data) = current_item.choices.get(0) {
-                                print!("{}", choice_data.delta.content);
-                                stdout().flush()?;
-                            }
-                            if let Some(choice_data) = current_item.choices.get(0) {
-                                if choice_data.finish_reason.is_some() {
-                                    println!(
-                                        "\nFinished reason: {:?}",
-                                        choice_data.finish_reason.as_deref().unwrap_or("")
-                                    );
-                                }
+                                print!("{}", choice_data.delta.content.green());
+                                io::stdout().flush()?;
                             }
                         }
                         Err(e) => {
@@ -125,6 +124,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("End--");
     Ok(())
 }
+
+fn create_spinner(message: &str) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.enable_steady_tick(Duration::from_millis(120));
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.blue} {msg}")
+            .unwrap()
+            .tick_strings(&[
+                "▹▹▹▹▹",
+                "▸▹▹▹▹",
+                "▹▸▹▹▹",
+                "▹▹▸▹▹",
+                "▹▹▹▸▹",
+                "▹▹▹▹▸",
+                "▪▪▪▪▪",
+            ]),
+    );
+    pb.set_message(message.to_string());
+    pb
+}
+
